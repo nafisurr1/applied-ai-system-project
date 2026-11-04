@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import csv
 from dataclasses import asdict, dataclass
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Union
 
 INT_FIELDS = {"id", "popularity", "release_decade"}
 FLOAT_FIELDS = {"energy", "tempo_bpm", "valence", "danceability", "acousticness", "instrumentalness"}
@@ -30,6 +30,29 @@ NUMERIC_PREFS = (
     "energy", "acousticness", "valence", "tempo_bpm", "danceability",
     "popularity", "release_decade", "instrumentalness",
 )
+# Diversity penalty: points taken off for each song already in the list by the same artist / in the same genre.
+ARTIST_PENALTY = 1.0
+GENRE_PENALTY = 0.5
+
+
+@dataclass(frozen=True)
+class ScoringMode:
+    """A weighting strategy. score_song() runs the same algorithm and reads every weight from the active mode."""
+    name: str
+    description: str
+    overrides: Dict[str, float]
+
+    def weight(self, feature: str) -> float:
+        """This mode's weight for a feature, falling back to the default recipe."""
+        return self.overrides.get(feature, WEIGHTS[feature])
+
+
+MODES = {
+    "balanced": ScoringMode("balanced", "default recipe: genre 2.0, mood 1.0, energy up to 1.5", {}),
+    "genre-first": ScoringMode("genre-first", "stay inside the favorite genre", {"genre": 4.0, "mood": 0.5, "energy": 1.0}),
+    "mood-first": ScoringMode("mood-first", "match the feeling over the label", {"genre": 1.0, "mood": 3.0, "mood_tags": 1.0}),
+    "energy-focused": ScoringMode("energy-focused", "weight-shift experiment: energy doubled, genre halved", {"genre": 1.0, "energy": 3.0}),
+}
 
 
 @dataclass
@@ -81,19 +104,21 @@ class Recommender:
     OOP implementation of the recommendation logic.
     Required by tests/test_recommender.py
     """
-    def __init__(self, songs: List[Song]):
-        """Hold the catalog of Song objects."""
+    def __init__(self, songs: List[Song], mode: str = "balanced", diverse: bool = False):
+        """Hold the catalog of Song objects and the scoring options."""
         self.songs = songs
+        self.mode = mode
+        self.diverse = diverse
 
     def recommend(self, user: UserProfile, k: int = 5) -> List[Song]:
         """Return the top k Song objects for this user, best first."""
         by_id = {song.id: song for song in self.songs}
-        ranked = recommend_songs(user.to_prefs(), [asdict(s) for s in self.songs], k)
+        ranked = recommend_songs(user.to_prefs(), [asdict(s) for s in self.songs], k, self.mode, self.diverse)
         return [by_id[song["id"]] for song, _, _ in ranked]
 
     def explain_recommendation(self, user: UserProfile, song: Song) -> str:
         """Explain in one line why this song scored the way it did for this user."""
-        score, reasons = score_song(user.to_prefs(), asdict(song))
+        score, reasons = score_song(user.to_prefs(), asdict(song), self.mode)
         return f"Score {score:.2f}: " + ("; ".join(reasons) or "no matching features")
 
 
@@ -134,26 +159,36 @@ def normalize_prefs(user_prefs: Dict) -> Dict:
     return prefs
 
 
-def score_song(user_prefs: Dict, song: Dict) -> Tuple[float, List[str]]:
+def get_mode(mode: Union[str, ScoringMode]) -> ScoringMode:
+    """Look up a scoring mode by name (or pass one through)."""
+    if isinstance(mode, ScoringMode):
+        return mode
+    if mode not in MODES:
+        raise ValueError(f"unknown mode {mode!r}; choose from {', '.join(MODES)}")
+    return MODES[mode]
+
+
+def score_song(user_prefs: Dict, song: Dict, mode: Union[str, ScoringMode] = "balanced") -> Tuple[float, List[str]]:
     """
     Scores a single song against user preferences.
     Required by recommend_songs() and src/main.py
     """
     prefs = normalize_prefs(user_prefs)
+    weight = get_mode(mode).weight
     score = 0.0
     reasons = []
 
     for feature in ("genre", "mood"):
         wanted = prefs.get(feature)
-        if wanted and str(song[feature]).lower() == str(wanted).lower():
-            score += WEIGHTS[feature]
-            reasons.append(f"{feature} match: {song[feature]} (+{WEIGHTS[feature]:.2f})")
+        if wanted and weight(feature) and str(song[feature]).lower() == str(wanted).lower():
+            score += weight(feature)
+            reasons.append(f"{feature} match: {song[feature]} (+{weight(feature):.2f})")
 
     for feature in NUMERIC_PREFS:
         if feature not in prefs or feature not in song:
             continue
         target = float(prefs[feature])
-        points = WEIGHTS[feature] * closeness(song[feature], target, SCALES.get(feature, 1.0))
+        points = weight(feature) * closeness(song[feature], target, SCALES.get(feature, 1.0))
         if points >= 0.01:
             score += points
             reasons.append(f"{feature} {song[feature]:g} vs target {target:g} (+{points:.2f})")
@@ -161,25 +196,60 @@ def score_song(user_prefs: Dict, song: Dict) -> Tuple[float, List[str]]:
     wanted_tags = {tag.lower() for tag in prefs.get("mood_tags", [])}
     shared = sorted(wanted_tags & {tag.lower() for tag in song.get("mood_tags", [])})
     if shared:
-        points = WEIGHTS["mood_tags"] * len(shared)
+        points = weight("mood_tags") * len(shared)
         score += points
         reasons.append(f"mood tags {', '.join(shared)} (+{points:.2f})")
 
     if prefs.get("allow_explicit") is False and song.get("explicit"):
-        score += WEIGHTS["explicit"]
-        reasons.append(f"explicit lyrics ({WEIGHTS['explicit']:+.2f})")
+        score += weight("explicit")
+        reasons.append(f"explicit lyrics ({weight('explicit'):+.2f})")
 
     return score, reasons
 
 
-def recommend_songs(user_prefs: Dict, songs: List[Dict], k: int = 5) -> List[Tuple[Dict, float, str]]:
+def diversity_penalty(song: Dict, picked: List[Dict]) -> Tuple[float, List[str]]:
+    """Points to subtract because songs by this artist or in this genre are already in the list."""
+    same_artist = sum(p["artist"] == song["artist"] for p in picked)
+    same_genre = sum(p["genre"] == song["genre"] for p in picked)
+    penalty, reasons = 0.0, []
+    if same_artist:
+        penalty += ARTIST_PENALTY * same_artist
+        reasons.append(f"diversity: {song['artist']} already listed (-{ARTIST_PENALTY * same_artist:.2f})")
+    if same_genre:
+        penalty += GENRE_PENALTY * same_genre
+        reasons.append(f"diversity: {song['genre']} already listed (-{GENRE_PENALTY * same_genre:.2f})")
+    return penalty, reasons
+
+
+def recommend_songs(
+    user_prefs: Dict,
+    songs: List[Dict],
+    k: int = 5,
+    mode: Union[str, ScoringMode] = "balanced",
+    diverse: bool = False,
+) -> List[Tuple[Dict, float, str]]:
     """
     Functional implementation of the recommendation logic.
     Required by src/main.py
     """
-    scored = []
-    for song in songs:
-        score, reasons = score_song(user_prefs, song)
-        scored.append((song, score, "; ".join(reasons) or "no matching features"))
+    scored = [(song, *score_song(user_prefs, song, mode)) for song in songs]
     # sorted() returns a new list and leaves `songs` untouched; ties go to the lower id.
-    return sorted(scored, key=lambda item: (-item[1], item[0]["id"]))[:max(k, 0)]
+    ranked = sorted(scored, key=lambda item: (-item[1], item[0]["id"]))
+    if diverse:
+        ranked = rerank_for_diversity(ranked, k)
+    return [(song, score, "; ".join(reasons) or "no matching features") for song, score, reasons in ranked[:max(k, 0)]]
+
+
+def rerank_for_diversity(ranked: List[Tuple[Dict, float, List[str]]], k: int) -> List[Tuple[Dict, float, List[str]]]:
+    """Greedily build the top k, each time taking the best song after its diversity penalty."""
+    remaining, picked = list(ranked), []
+    while remaining and len(picked) < k:
+        best = None
+        for index, (song, score, reasons) in enumerate(remaining):
+            penalty, notes = diversity_penalty(song, [p[0] for p in picked])
+            candidate = (score - penalty, -song["id"], index, reasons + notes)
+            if best is None or candidate[:2] > best[:2]:
+                best = candidate
+        adjusted, _, index, reasons = best
+        picked.append((remaining.pop(index)[0], adjusted, reasons))
+    return picked
