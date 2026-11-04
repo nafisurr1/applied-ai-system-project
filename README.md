@@ -43,7 +43,7 @@ This project is a small **content-based** recommender. There are no other users,
 |--------|------------------------|
 | Genre matches the favorite genre | +2.0 |
 | Mood matches the favorite mood | +1.0 |
-| Energy closeness | up to +1.5, computed as `1.5 × (1 − |song.energy − target|)` |
+| Energy closeness | up to +1.5, computed as `1.5 × (1 − abs(song.energy − target))` |
 | Acousticness closeness (target 0.8 if `likes_acoustic`, else 0.2) | up to +0.5 |
 | Any other numeric target the profile sets (valence, tempo, danceability, popularity, decade, instrumentalness) | up to +0.5 each, same closeness formula; tempo is scaled by 100 BPM, popularity by 100, decade by 50 years |
 | Each matching mood tag | +0.5 |
