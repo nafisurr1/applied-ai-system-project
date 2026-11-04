@@ -6,8 +6,8 @@ import csv
 from dataclasses import asdict, dataclass
 from typing import Dict, List, Tuple
 
-INT_FIELDS = {"id"}
-FLOAT_FIELDS = {"energy", "tempo_bpm", "valence", "danceability", "acousticness"}
+INT_FIELDS = {"id", "popularity", "release_decade"}
+FLOAT_FIELDS = {"energy", "tempo_bpm", "valence", "danceability", "acousticness", "instrumentalness"}
 
 # Points for each signal. Numeric features earn up to their weight, scaled by closeness.
 WEIGHTS = {
@@ -18,10 +18,18 @@ WEIGHTS = {
     "valence": 0.5,
     "tempo_bpm": 0.5,
     "danceability": 0.5,
+    "popularity": 0.5,
+    "release_decade": 0.5,
+    "instrumentalness": 0.5,
+    "mood_tags": 0.5,  # per matching tag
+    "explicit": -3.0,  # applied when the profile sets allow_explicit=False
 }
 # How big a gap counts as "completely different" for each numeric feature (default 1.0).
-SCALES = {"tempo_bpm": 100.0}
-NUMERIC_PREFS = ("energy", "acousticness", "valence", "tempo_bpm", "danceability")
+SCALES = {"tempo_bpm": 100.0, "popularity": 100.0, "release_decade": 50.0}
+NUMERIC_PREFS = (
+    "energy", "acousticness", "valence", "tempo_bpm", "danceability",
+    "popularity", "release_decade", "instrumentalness",
+)
 
 
 @dataclass
@@ -40,6 +48,11 @@ class Song:
     valence: float
     danceability: float
     acousticness: float
+    popularity: int = 50
+    release_decade: int = 2010
+    mood_tags: Tuple[str, ...] = ()
+    instrumentalness: float = 0.0
+    explicit: bool = False
 
 
 @dataclass
@@ -97,6 +110,10 @@ def load_songs(csv_path: str) -> List[Dict]:
                 song[field] = int(song[field])
             for field in FLOAT_FIELDS & song.keys():
                 song[field] = float(song[field])
+            if "mood_tags" in song:
+                song["mood_tags"] = [tag.strip() for tag in song["mood_tags"].split(";") if tag.strip()]
+            if "explicit" in song:
+                song["explicit"] = song["explicit"].strip().lower() in ("1", "true", "yes")
             songs.append(song)
     return songs
 
@@ -133,13 +150,24 @@ def score_song(user_prefs: Dict, song: Dict) -> Tuple[float, List[str]]:
             reasons.append(f"{feature} match: {song[feature]} (+{WEIGHTS[feature]:.2f})")
 
     for feature in NUMERIC_PREFS:
-        if feature not in prefs:
+        if feature not in prefs or feature not in song:
             continue
         target = float(prefs[feature])
         points = WEIGHTS[feature] * closeness(song[feature], target, SCALES.get(feature, 1.0))
         if points >= 0.01:
             score += points
             reasons.append(f"{feature} {song[feature]:g} vs target {target:g} (+{points:.2f})")
+
+    wanted_tags = {tag.lower() for tag in prefs.get("mood_tags", [])}
+    shared = sorted(wanted_tags & {tag.lower() for tag in song.get("mood_tags", [])})
+    if shared:
+        points = WEIGHTS["mood_tags"] * len(shared)
+        score += points
+        reasons.append(f"mood tags {', '.join(shared)} (+{points:.2f})")
+
+    if prefs.get("allow_explicit") is False and song.get("explicit"):
+        score += WEIGHTS["explicit"]
+        reasons.append(f"explicit lyrics ({WEIGHTS['explicit']:+.2f})")
 
     return score, reasons
 
