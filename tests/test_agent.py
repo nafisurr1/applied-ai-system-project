@@ -179,3 +179,29 @@ def test_knowledge_aliases_cover_common_spellings():
     assert [k.canonical_genre(g) for g in ["hip hop", "R & B", "House", "kpop"]] == ["hip-hop", "r&b", "edm", "k-pop"]
     assert k.canonical_activity("Gym") == "workout"
     assert k.canonical_genre("polka") is None
+
+
+# --- fixes found by evaluation run 1 -------------------------------------------
+
+def test_genre_outside_catalog_is_never_high_confidence(logger):
+    reply = {"picks": [{"id": 5, "why": "Pumped workout pop with a big drop."}, {"id": 12, "why": "Festival EDM drop."},
+                       {"id": 3, "why": "Fast driving rock."}], "summary": "Gym picks."}
+    result = make(logger, parse(genre="k-pop", mood="intense", activity="workout", energy=0.9, mood_tags=["pumped"]), reply).run("hype k-pop for the gym")
+    assert result.confidence <= 0.69 and result.confidence_label == "medium"
+
+
+def test_profile_that_scores_nothing_asks_instead_of_guessing(logger):
+    concierge = make(logger, parse(activity="party", exclude_explicit=True), use_retrieval=False)
+    result = concierge.run("clean songs for my kids' birthday party")
+    assert result.status == "clarify" and result.picks == []
+    assert [e for e in result.trace if e["step"] == "clarify"][0]["reason"] == "best candidate scored 0"
+
+
+def test_parser_prompt_hides_guide_explicit_rules_and_bare_prompt_is_minimal(logger):
+    concierge = make(logger)
+    hits = concierge.retriever.search("music for studying", k=6)
+    prompt = concierge._parse_prompt(hits)
+    assert "studying" in prompt and "Explicit:" not in prompt and "Examples:" in prompt
+    bare = make(logger, prompt_style="bare")._parse_prompt(hits)
+    assert "Examples:" not in bare and "studying" not in bare and "mood_tags" in bare
+    assert "Examples:" not in make(logger, prompt_style="zero-shot")._parse_prompt(hits)

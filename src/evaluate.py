@@ -127,11 +127,11 @@ def run_cases(concierge: Concierge, label: str) -> Tuple[List[str], int, int, Li
     return rows, passed, len(CASES), confidences, time.perf_counter() - start
 
 
-def score_parser(concierge: Concierge, label: str) -> Tuple[str, List[str]]:
-    """Field accuracy of one parser variant against PARSE_SET (after the same normalization the agent uses)."""
+def score_parser(concierge: Concierge, label: str, dataset: List[Tuple[str, Dict]]) -> Tuple[str, List[str]]:
+    """Field accuracy of one parser variant on a labeled set (after the same normalization the agent uses)."""
     correct = {"genre": 0, "activity": 0, "clean": 0, "music": 0}
     misses = []
-    for request, gold in PARSE_SET:
+    for request, gold in dataset:
         raw, _ = concierge.parse_request(request, concierge.retriever.search(request, k=6), _ScratchResult())
         got = {
             "genre": concierge.knowledge.canonical_genre(raw.get("genre")) if raw.get("is_music_request", True) else None,
@@ -144,7 +144,7 @@ def score_parser(concierge: Concierge, label: str) -> Tuple[str, List[str]]:
                 correct[key] += 1
             else:
                 misses.append(f"{label}: '{request}' {key}={got[key]!r} (expected {gold[key]!r})")
-    n = len(PARSE_SET)
+    n = len(dataset)
     total = sum(correct.values())
     row = (f"| {label} | {correct['genre']}/{n} | {correct['activity']}/{n} | {correct['clean']}/{n} | "
            f"{correct['music']}/{n} | {total}/{4 * n} ({total / (4 * n):.0%}) |")
@@ -188,18 +188,24 @@ def main() -> None:
         print("\n**Summary**\n")
         print("\n".join(summary))
 
-        print("\n## Part 2: request parser, field accuracy on 14 labeled requests\n")
-        print("| Parser | Genre | Activity | Clean-lyrics flag | Is-music flag | Overall |")
-        print("|--------|-------|----------|-------------------|---------------|---------|")
+        print("\n## Part 2: request parser, field accuracy\n")
+        print("Set A: 14 requests labeled before run 1. Set B: 15 new requests labeled after run 1, before any prompt "
+              "change was tested. Variants: few-shot (vocabulary + rules + retrieved guides + 4 examples), zero-shot "
+              "(same without the examples), bare (field names only, no vocabulary, rules, guides or examples), rules "
+              "(offline keyword parser).")
         variants = []
         if llm is not None and llm.llm is not None:
-            variants += [("llm few-shot", Concierge(llm=llm.llm, few_shot=True)), ("llm zero-shot", Concierge(llm=llm.llm, few_shot=False))]
+            variants += [(f"llm {style}", Concierge(llm=llm.llm, prompt_style=style)) for style in ("few-shot", "zero-shot", "bare")]
         variants.append(("rules (offline)", Concierge(offline=True)))
         all_misses = []
-        for label, concierge in variants:
-            row, misses = score_parser(concierge, label)
-            print(row)
-            all_misses += misses
+        for set_name, dataset in (("A", PARSE_SET), ("B", PARSE_SET_B)):
+            print(f"\n**Set {set_name} ({len(dataset)} requests)**\n")
+            print("| Parser | Genre | Activity | Clean-lyrics flag | Is-music flag | Overall |")
+            print("|--------|-------|----------|-------------------|---------------|---------|")
+            for label, concierge in variants:
+                row, misses = score_parser(concierge, label, dataset)
+                print(row)
+                all_misses += [f"set {set_name}, {m}" for m in misses]
         print("\n**Misses**\n")
         print("\n".join(f"- {m}" for m in all_misses) or "- none")
 

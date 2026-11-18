@@ -66,6 +66,7 @@ COMPOSE_SCHEMA = {
     },
     "required": ["picks", "summary"],
 }
+PROMPT_STYLES = ("few-shot", "zero-shot", "bare")
 FEW_SHOT = [
     ("something mellow to study to, no swearing please",
      {"is_music_request": True, "genre": None, "mood": "chill", "activity": "studying", "energy": None,
@@ -122,13 +123,15 @@ class Result:
 class Concierge:
     """Orchestrates retrieval, the LLM, the recommender and the verifier for one request at a time."""
 
-    def __init__(self, llm: Optional[object] = None, offline: bool = False, few_shot: bool = True, k: int = 5,
+    def __init__(self, llm: Optional[object] = None, offline: bool = False, prompt_style: str = "few-shot", k: int = 5,
                  songs: Optional[List[Dict]] = None, logger: Optional[logging.Logger] = None, use_retrieval: bool = True):
         """Use the given LLM (or a local Ollama client) unless offline mode is forced or no model is reachable."""
         self.songs = songs if songs is not None else load_songs(str(ROOT / "data" / "songs.csv"))
         self.retriever = Retriever()
         self.knowledge = Knowledge(self.retriever.chunks)
-        self.few_shot = few_shot
+        if prompt_style not in PROMPT_STYLES:
+            raise ValueError(f"prompt_style must be one of {', '.join(PROMPT_STYLES)}")
+        self.prompt_style = prompt_style
         self.use_retrieval = use_retrieval  # False = ablation: no retrieved context, related genres, activity targets or note matches
         self.k = k
         self.logger = logger or setup_logger()
@@ -149,7 +152,7 @@ class Concierge:
     def run(self, request: str) -> Result:
         """Answer one request end to end."""
         result = Result(request=request, status="ok", message="", mode=self.mode)
-        self._step(result, "start", mode=self.mode, few_shot=self.few_shot, retrieval=self.use_retrieval)
+        self._step(result, "start", mode=self.mode, prompt_style=self.prompt_style, retrieval=self.use_retrieval)
 
         problem = self.guard_input(request)
         if problem:
@@ -181,6 +184,12 @@ class Concierge:
             return result
 
         candidates = recommend_songs(profile, self.songs, k=8, diverse=True)
+        if not candidates or candidates[0][1] <= 0:
+            result.status = "clarify"
+            result.message = ("Nothing in the catalog matched what I understood from that. Can you add a genre, a mood, "
+                              "or how energetic you want it?")
+            self._step(result, "clarify", reason="best candidate scored 0", question=result.message)
+            return result
         self._step(result, "rank", candidates=[(s["id"], s["title"], round(sc, 2)) for s, sc, _ in candidates])
 
         picks, summary, compose_mode = self.compose(request, profile, candidates, result)
@@ -229,8 +238,14 @@ class Concierge:
         return raw, "rules"
 
     def _parse_prompt(self, hits: List) -> str:
-        """System prompt with the allowed vocabulary, retrieved guide snippets and (optionally) few-shot examples."""
-        guides = [f"[{c.source}/{c.title}] {c.text[:400]}" for c, _ in hits if c.source != "song_notes"]
+        """System prompt for the parser: bare baseline, or vocabulary + rules + retrieved guides (+ few-shot examples)."""
+        if self.prompt_style == "bare":
+            return ("Extract the music request as JSON with the fields is_music_request, genre, mood, activity, "
+                    "energy (0-1), mood_tags, exclude_explicit and described_sound.")
+        # The guides' "Explicit:" lines are applied by validate_profile(); showing them to the model made it copy
+        # them into exclude_explicit, which hard-filtered study and sleep requests nobody asked to filter.
+        guides = [f"[{c.source}/{c.title}] " + "\n".join(line for line in c.text[:400].splitlines() if not line.startswith("Explicit:"))
+                  for c, _ in hits if c.source != "song_notes"]
         prompt = (
             "You turn a listener's music request into JSON for a recommender. Fill a field only if the request "
             "states or clearly implies it; otherwise use null (or [] / false).\n"
@@ -244,7 +259,7 @@ class Concierge:
             "- is_music_request: false if the message is not asking for music at all.\n"
             "Reference notes retrieved for this request:\n" + ("\n".join(guides) or "(none)")
         )
-        if self.few_shot:
+        if self.prompt_style == "few-shot":
             examples = "\n".join(f"Request: {q}\nJSON: {json.dumps(a)}" for q, a in FEW_SHOT)
             prompt += "\nExamples:\n" + examples
         return prompt
@@ -392,7 +407,7 @@ class Concierge:
         """System prompt listing only the ranked candidates, their scoring reasons and their liner notes."""
         lines = []
         for song, score, why in candidates:
-            note = self.knowledge.song_notes.get(song["id"])
+            note = self.knowledge.song_notes.get(song["id"]) if self.use_retrieval else None
             lines.append(f"id {song['id']} | {song['title']} — {song['artist']} | {song['genre']} / {song['mood']} | "
                          f"energy {song['energy']} | explicit: {'yes' if song.get('explicit') else 'no'} | score {score:.2f} "
                          f"({why}) | notes: {note.text if note else 'none'}")
@@ -463,6 +478,8 @@ class Concierge:
         factor *= 0.8 if genre and not self.knowledge.in_catalog(genre) else 1.0
         factor *= 0.85 if any(n.startswith("unknown genre") for n in notes) else 1.0
         value = round(strength * factor, 2)
+        if genre and not self.knowledge.in_catalog(genre):
+            value = min(value, 0.69)  # no songs in the requested genre, so cap below "high"
         return value, "high" if value >= 0.7 else "medium" if value >= 0.45 else "low"
 
     # -- logging -----------------------------------------------------------------------------

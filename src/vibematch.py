@@ -64,11 +64,14 @@ def main() -> None:
     parser.add_argument("request", nargs="*", help="what you want to hear")
     parser.add_argument("--offline", action="store_true", help="skip the LLM and use the rule-based fallback")
     parser.add_argument("--zero-shot", action="store_true", help="parse without the few-shot examples")
+    parser.add_argument("--bare-prompt", action="store_true", help="baseline parser prompt: field names only")
+    parser.add_argument("--no-retrieval", action="store_true", help="ablation: skip the knowledge base")
     parser.add_argument("--trace", action="store_true", help="print every agent step")
     parser.add_argument("--k", type=int, default=5, help="picks to show in fallback mode")
     args = parser.parse_args()
 
-    concierge = Concierge(offline=args.offline, few_shot=not args.zero_shot, k=args.k)
+    style = "bare" if args.bare_prompt else "zero-shot" if args.zero_shot else "few-shot"
+    concierge = Concierge(offline=args.offline, prompt_style=style, k=args.k, use_retrieval=not args.no_retrieval)
     if args.request:
         print(render(concierge.run(" ".join(args.request)), args.trace))
         return
