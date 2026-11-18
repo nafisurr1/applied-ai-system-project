@@ -377,11 +377,13 @@ class Concierge:
         by_id = {s["id"]: (s, sc, why) for s, sc, why in candidates}
         if self.llm is not None:
             feedback = ""
+            errors = 0
             for attempt in (1, 2):
                 try:
                     reply = self.llm.chat_json(self._compose_prompt(profile, candidates), request + feedback, COMPOSE_SCHEMA)
                 except LLMError as err:
                     self._step(result, "compose", source="llm", attempt=attempt, error=str(err), level="warning")
+                    errors += 1
                     continue
                 picks = []
                 for p in reply.get("picks", []):
@@ -400,7 +402,8 @@ class Concierge:
                 failed = [name for name, ok in checks.items() if not ok]
                 feedback = ("\n\nYour previous answer failed these checks: " + ", ".join(failed) +
                             ". Choose 3-5 songs using only candidate ids, and only mention each song's own title.")
-            self._step(result, "compose", source="template", reason="llm answer failed verification twice", level="warning")
+            reason = "llm unavailable on both attempts" if errors == 2 else "llm answer did not pass verification"
+            self._step(result, "compose", source="template", reason=reason, level="warning")
         picks = [Pick(s, sc, self._template_reason(s, why)) for s, sc, why in candidates[: self.k]]
         summary = self._template_summary(profile)
         self._step(result, "compose", source="template", picks=[(p.song["id"], p.why) for p in picks])
