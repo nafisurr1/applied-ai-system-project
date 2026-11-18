@@ -1,0 +1,49 @@
+flowchart TD
+    %% VibeMatch 2.0 architecture: matches src/agent.py, src/retriever.py, src/recommender.py and src/evaluate.py
+
+    U["Listener request<br/>(free text, CLI)"] --> G{"Input guardrail<br/>guard_input()"}
+    G -- "empty / too long /<br/>prompt injection" --> REF["Refusal message"]
+    G -- ok --> R["Retriever (BM25)<br/>retriever.search()"]
+
+    subgraph KB["Knowledge base (knowledge/*.md)"]
+        GG["genre_guide.md<br/>aliases, related genres,<br/>in-catalog flag"]
+        AG["activity_guide.md<br/>target energy, mood tags,<br/>explicit rules"]
+        SN["song_notes.md<br/>instruments, lyrics,<br/>production per song"]
+    end
+    KB --> R
+
+    R -- "top guide chunks" --> P["Parse request<br/>LLM qwen3:8b via Ollama<br/>few-shot, JSON schema"]
+    P -. "LLM unreachable or<br/>bad JSON twice" .-> RB["Rule-based parser<br/>(offline fallback)"]
+    P --> V{"Validate + normalize<br/>validate_profile()"}
+    RB --> V
+    P -- "is_music_request = false" --> REF
+    V -- "aliases → catalog vocab,<br/>clamp energy, drop unknowns,<br/>merge activity targets,<br/>related genres, song-note matches" --> PR["Taste profile"]
+    PR -- "no usable signal" --> CL["Clarifying question<br/>(human in the loop)"]
+    CL -- "listener answers" --> U
+    PR --> REC["Recommender (Project 3 engine)<br/>score_song + recommend_songs<br/>related-genre credit, explicit filter,<br/>diversity penalty"]
+    D[("data/songs.csv<br/>20 songs")] --> REC
+    REC -- "top 8 candidates<br/>+ scoring reasons" --> C["Compose answer<br/>LLM picks 3-5 candidates,<br/>reasons grounded in song notes"]
+    SN --> C
+    C --> VF{"Verifier<br/>verify()"}
+    VF -- "invented id / explicit pick /<br/>other songs mentioned" --> C
+    VF -. "fails twice" .-> T["Template answer<br/>(deterministic fallback)"]
+    VF -- "all checks pass" --> CF["Confidence score<br/>match strength × fallback<br/>and genre-gap penalties"]
+    T --> CF
+    CF --> OUT["Answer: picks, reasons,<br/>checks, confidence<br/>(low → 'no strong match' warning)"]
+
+    LOG[("logs/vibematch.log<br/>one JSON line per step")]
+    G -.-> LOG
+    P -.-> LOG
+    V -.-> LOG
+    C -.-> LOG
+    VF -.-> LOG
+
+    subgraph TEST["Testing and human review"]
+        PY["pytest: 41 tests<br/>(fake LLM, no Ollama needed)"]
+        EV["src/evaluate.py<br/>14 end-to-end cases × 3 configs<br/>+ parser few-shot vs zero-shot vs rules"]
+        HR["Human review of picks<br/>(README evaluation table)"]
+    end
+    EV --> OUT
+    PY --> V
+    PY --> VF
+    HR --> OUT

@@ -123,12 +123,13 @@ class Concierge:
     """Orchestrates retrieval, the LLM, the recommender and the verifier for one request at a time."""
 
     def __init__(self, llm: Optional[object] = None, offline: bool = False, few_shot: bool = True, k: int = 5,
-                 songs: Optional[List[Dict]] = None, logger: Optional[logging.Logger] = None):
+                 songs: Optional[List[Dict]] = None, logger: Optional[logging.Logger] = None, use_retrieval: bool = True):
         """Use the given LLM (or a local Ollama client) unless offline mode is forced or no model is reachable."""
         self.songs = songs if songs is not None else load_songs(str(ROOT / "data" / "songs.csv"))
         self.retriever = Retriever()
         self.knowledge = Knowledge(self.retriever.chunks)
         self.few_shot = few_shot
+        self.use_retrieval = use_retrieval  # False = ablation: no retrieved context, related genres, activity targets or note matches
         self.k = k
         self.logger = logger or setup_logger()
         self.catalog_moods = sorted({s["mood"] for s in self.songs})
@@ -148,7 +149,7 @@ class Concierge:
     def run(self, request: str) -> Result:
         """Answer one request end to end."""
         result = Result(request=request, status="ok", message="", mode=self.mode)
-        self._step(result, "start", mode=self.mode, few_shot=self.few_shot)
+        self._step(result, "start", mode=self.mode, few_shot=self.few_shot, retrieval=self.use_retrieval)
 
         problem = self.guard_input(request)
         if problem:
@@ -157,7 +158,7 @@ class Concierge:
             return result
         self._step(result, "guard_input", blocked=False)
 
-        hits = self.retriever.search(request, k=6)
+        hits = self.retriever.search(request, k=6) if self.use_retrieval else []
         result.retrieved = [(c.source, c.title, round(s, 2)) for c, s in hits]
         self._step(result, "retrieve", hits=result.retrieved)
 
@@ -286,8 +287,8 @@ class Concierge:
             if genre_text.strip().lower() != genre:
                 notes.append(f"genre '{genre_text}' normalized to '{genre}'")
             profile["genre"] = genre
-            profile["related_genres"] = self.knowledge.related_genres(genre)
-            if not self.knowledge.in_catalog(genre):
+            profile["related_genres"] = self.knowledge.related_genres(genre) if self.use_retrieval else []
+            if not self.knowledge.in_catalog(genre) and self.use_retrieval:
                 notes.append(f"'{genre}' is not in the catalog; using related genres {', '.join(profile['related_genres'])}")
 
         mood_text = (raw.get("mood") or "").strip().lower()
@@ -305,7 +306,7 @@ class Concierge:
             notes.append(f"activity '{raw['activity']}' not in the activity guide; ignored")
         elif activity:
             profile["activity"] = activity
-            targets = self.knowledge.activity_targets(activity)
+            targets = self.knowledge.activity_targets(activity) if self.use_retrieval else {}
 
         energy = raw.get("energy")
         if isinstance(energy, (int, float)) and not isinstance(energy, bool):
@@ -337,7 +338,8 @@ class Concierge:
         note_query = f"{sound} {request}" if sound else request
         matches: Dict[int, str] = {}
         query_terms = set(tokenize(note_query))
-        for chunk, score in self.retriever.search(note_query, k=3, sources=["song_notes"], min_score=3.0):
+        note_hits = self.retriever.search(note_query, k=3, sources=["song_notes"], min_score=3.0) if self.use_retrieval else []
+        for chunk, score in note_hits:
             song_id = int(chunk.title.split(".", 1)[0])
             shared = list(dict.fromkeys(t for t in tokenize(chunk.title + " " + chunk.text) if t in query_terms))[:3]
             matches[song_id] = "'" + ", ".join(shared) + "'" if shared else "the request"
