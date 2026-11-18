@@ -85,6 +85,26 @@ PARSE_SET: List[Tuple[str, Dict]] = [
     ("throwback synthwave for a midnight drive", {"genre": "synthwave", "activity": "night drive", "clean": False, "music": True}),
 ]
 
+# A second labeled set written after run 1 and before any prompt changes were tested, so the parser
+# comparison is not judged only on the set whose errors were read while fixing the system.
+PARSE_SET_B: List[Tuple[str, Dict]] = [
+    ("put on some jazz while I cook", {"genre": "jazz", "activity": "relaxing", "clean": False, "music": True}),
+    ("need gym motivation, nothing with cursing", {"genre": None, "activity": "workout", "clean": True, "music": True}),
+    ("rainy sunday blues", {"genre": "blues", "activity": "rainy day", "clean": False, "music": True}),
+    ("quiet piano for meditating", {"genre": "classical", "activity": "meditation", "clean": False, "music": True}),
+    ("what time is it in tokyo", {"genre": None, "activity": None, "clean": False, "music": False}),
+    ("afrobeats for a party tonight", {"genre": "afrobeats", "activity": "party", "clean": False, "music": True}),
+    ("study playlist please", {"genre": None, "activity": "studying", "clean": False, "music": True}),
+    ("metalcore to lift heavy", {"genre": "metal", "activity": "workout", "clean": False, "music": True}),
+    ("retrowave for driving at night", {"genre": "synthwave", "activity": "night drive", "clean": False, "music": True}),
+    ("can you recommend a good pizza place", {"genre": None, "activity": None, "clean": False, "music": False}),
+    ("folk songs for a breakup, clean lyrics please", {"genre": "folk", "activity": "heartbreak", "clean": True, "music": True}),
+    ("upbeat latin music for dancing", {"genre": "latin", "activity": "party", "clean": False, "music": True}),
+    ("background music for coding", {"genre": None, "activity": "studying", "clean": False, "music": True}),
+    ("something to help me fall asleep", {"genre": None, "activity": "sleep", "clean": False, "music": True}),
+    ("house music for my morning run", {"genre": "edm", "activity": "running", "clean": False, "music": True}),
+]
+
 
 def run_cases(concierge: Concierge, label: str) -> Tuple[List[str], int, int, List[float], float]:
     """Run every case; return table rows, passed count, total, confidences of ok answers, seconds."""
