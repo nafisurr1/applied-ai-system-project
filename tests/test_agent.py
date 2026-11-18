@@ -205,3 +205,10 @@ def test_parser_prompt_hides_guide_explicit_rules_and_bare_prompt_is_minimal(log
     bare = make(logger, prompt_style="bare")._parse_prompt(hits)
     assert "Examples:" not in bare and "studying" not in bare and "mood_tags" in bare
     assert "Examples:" not in make(logger, prompt_style="zero-shot")._parse_prompt(hits)
+
+
+def test_lyrics_rule_words_do_not_match_song_notes(logger):
+    profile, _ = make(logger).validate_profile(parse(activity="studying", exclude_explicit=True), "calm music for studying, no explicit lyrics")
+    assert "note_matches" not in profile
+    profile, _ = make(logger).validate_profile(parse(described_sound="saxophone"), "something with a saxophone, no explicit lyrics")
+    assert 7 in profile["note_matches"] and 16 not in profile["note_matches"]

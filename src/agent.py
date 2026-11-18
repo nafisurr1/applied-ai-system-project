@@ -29,6 +29,9 @@ INJECTION_PATTERNS = re.compile(
     re.I,
 )
 EXPLICIT_OFF = re.compile(r"\b(clean|no (explicit|swearing|cursing|curse words|bad words)|kid[- ]?friendly|family[- ]friendly|for (my )?kids)\b", re.I)
+# Words about lyrics rules, not sound: they must not match song notes ("no explicit lyrics" matched an explicit song's notes).
+NOTE_IGNORE = {"explicit", "lyrics", "lyric", "clean", "swearing", "cursing", "curse", "words", "kid", "kids",
+               "family", "friendly", "no", "nothing"}
 MOOD_SYNONYMS = {
     "upbeat": "happy", "cheerful": "happy", "joyful": "happy", "feel-good": "happy", "feel good": "happy",
     "calm": "chill", "mellow": "chill", "chilled": "chill", "laid-back": "relaxed", "laid back": "relaxed",
@@ -350,7 +353,7 @@ class Concierge:
             profile["allow_explicit"] = False
 
         sound = raw.get("described_sound")
-        note_query = f"{sound} {request}" if sound else request
+        note_query = " ".join(t for t in tokenize(f"{sound or ''} {request}") if t not in NOTE_IGNORE)
         matches: Dict[int, str] = {}
         query_terms = set(tokenize(note_query))
         note_hits = self.retriever.search(note_query, k=3, sources=["song_notes"], min_score=3.0) if self.use_retrieval else []
