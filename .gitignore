@@ -13,3 +13,7 @@ venv/
 
 # Pytest cache
 .pytest_cache/
+
+# Runtime logs (sample traces are committed under assets/)
+logs/
+.env
