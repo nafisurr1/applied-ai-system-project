@@ -38,12 +38,10 @@ flowchart TD
     C -.-> LOG
     VF -.-> LOG
 
-    subgraph TEST["Testing and human review"]
-        PY["pytest: 41 tests<br/>(fake LLM, no Ollama needed)"]
-        EV["src/evaluate.py<br/>14 end-to-end cases × 3 configs<br/>+ parser few-shot vs zero-shot vs rules"]
-        HR["Human review of picks<br/>(README evaluation table)"]
+    subgraph TEST["Testing"]
+        PY["pytest: 45 tests<br/>(fake LLM, no Ollama needed)"]
+        EV["src/evaluate.py<br/>14 end-to-end cases × 3 configs<br/>+ parser: few-shot vs zero-shot<br/>vs bare baseline vs rules"]
     end
     EV --> OUT
     PY --> V
     PY --> VF
-    HR --> OUT
