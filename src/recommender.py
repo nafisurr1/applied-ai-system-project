@@ -23,6 +23,8 @@ WEIGHTS = {
     "instrumentalness": 0.5,
     "mood_tags": 0.5,  # per matching tag
     "explicit": -3.0,  # applied when the profile sets allow_explicit=False
+    "related_genre": 1.0,  # partial credit for a genre the genre guide lists as related
+    "song_note": 0.75,  # the song's liner notes match words from the request
 }
 # How big a gap counts as "completely different" for each numeric feature (default 1.0).
 SCALES = {"tempo_bpm": 100.0, "popularity": 100.0, "release_decade": 50.0}
@@ -184,6 +186,17 @@ def score_song(user_prefs: Dict, song: Dict, mode: Union[str, ScoringMode] = "ba
             score += weight(feature)
             reasons.append(f"{feature} match: {song[feature]} (+{weight(feature):.2f})")
 
+    related = [g.lower() for g in prefs.get("related_genres", [])]
+    wanted_genre = str(prefs.get("genre") or "").lower()
+    if related and song["genre"].lower() != wanted_genre and song["genre"].lower() in related:
+        score += weight("related_genre")
+        reasons.append(f"related genre: {song['genre']} ~ {prefs.get('genre') or 'request'} (+{weight('related_genre'):.2f})")
+
+    note_phrase = prefs.get("note_matches", {}).get(song.get("id"))
+    if note_phrase:
+        score += weight("song_note")
+        reasons.append(f"song notes mention {note_phrase} (+{weight('song_note'):.2f})")
+
     for feature in NUMERIC_PREFS:
         if feature not in prefs or feature not in song:
             continue
@@ -232,6 +245,8 @@ def recommend_songs(
     Functional implementation of the recommendation logic.
     Required by src/main.py
     """
+    if user_prefs.get("exclude_explicit"):
+        songs = [song for song in songs if not song.get("explicit")]
     scored = [(song, *score_song(user_prefs, song, mode)) for song in songs]
     # sorted() returns a new list and leaves `songs` untouched; ties go to the lower id.
     ranked = sorted(scored, key=lambda item: (-item[1], item[0]["id"]))
